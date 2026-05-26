@@ -21,7 +21,8 @@ import {
   formatProviderCredentials as _formatProviderCredentials,
   getAllAccessTokens as _getAllAccessTokens,
   refreshKiroToken as _refreshKiroToken,
-  getRefreshLeadMs as _getRefreshLeadMs
+  getRefreshLeadMs as _getRefreshLeadMs,
+  isUnrecoverableRefreshError,
 } from "open-sse/services/tokenRefresh.js";
 
 export const TOKEN_EXPIRY_BUFFER_MS = BUFFER_MS;
@@ -219,6 +220,25 @@ export async function checkAndRefreshToken(provider, credentials) {
       });
 
       const newCreds = await getAccessToken(provider, creds);
+
+      // Refresh token consumed/invalid (e.g. Auth0 revoked the family) — stop retrying,
+      // mark the connection so the dashboard surfaces it for re-auth.
+      if (isUnrecoverableRefreshError(newCreds)) {
+        log.warn("TOKEN_REFRESH", "Unrecoverable refresh error, marking connection expired", {
+          provider,
+          connectionId: creds.connectionId,
+          code: newCreds.code,
+        });
+        if (creds.connectionId) {
+          await updateProviderConnection(creds.connectionId, {
+            testStatus: "expired",
+            lastError: "Refresh token expired or revoked — re-authentication required",
+            lastErrorAt: new Date().toISOString(),
+          }).catch(() => {});
+        }
+        return creds;
+      }
+
       if (newCreds?.accessToken) {
         const mergedCreds = {
           ...newCreds,

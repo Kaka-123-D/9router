@@ -119,8 +119,12 @@ export async function GET(request, { params }) {
     const isApikeyEligible =
       connection.authType === "apikey" &&
       USAGE_APIKEY_PROVIDERS.includes(connection.provider);
+    // Codex session-imported accounts (access_token, no refresh) can still query
+    // wham/usage with just their bearer token.
+    const isCodexAccessToken =
+      connection.authType === "access_token" && connection.provider === "codex";
 
-    if (!isOAuth && !isApikeyEligible) {
+    if (!isOAuth && !isApikeyEligible && !isCodexAccessToken) {
       return Response.json({ message: "Usage not available for this connection" });
     }
 

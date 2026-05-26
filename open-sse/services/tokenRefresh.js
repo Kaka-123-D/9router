@@ -32,10 +32,15 @@ async function refreshXaiToken(refreshToken, log) {
 // Default token expiry buffer (refresh if expires within 5 minutes)
 export const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000;
 
-// In-flight refresh dedup: prevents race condition that triggers refresh_token_reused → Auth0 family revoke
+// In-flight refresh dedup: prevents race condition that triggers refresh_token_reused → Auth0 family revoke.
+// Keyed by connectionId (stable across token rotation) so two concurrent requests on the same
+// connection share one refresh even after the refresh_token value changes. The resolved entry is
+// kept for a short grace window so a request arriving just after refresh reuses the freshly-rotated
+// token instead of reading the now-stale refresh_token from the DB (whose write may lag).
 const refreshPromiseCache = new Map();
-function getRefreshCacheKey(provider, refreshToken) {
-  return `${provider}:${refreshToken}`;
+const REFRESH_CACHE_GRACE_MS = 30 * 1000;
+function getRefreshCacheKey(provider, credentials) {
+  return `${provider}:${credentials.connectionId || credentials.refreshToken}`;
 }
 
 // Check if refresh result indicates unrecoverable error (caller should stop retry, force re-auth)
@@ -545,15 +550,27 @@ export async function getAccessToken(provider, credentials, log) {
     return null;
   }
 
-  const cacheKey = getRefreshCacheKey(provider, credentials.refreshToken);
+  const cacheKey = getRefreshCacheKey(provider, credentials);
 
-  if (refreshPromiseCache.has(cacheKey)) {
-    log?.info?.("TOKEN_REFRESH", `Reusing in-flight refresh for ${provider}`);
-    return refreshPromiseCache.get(cacheKey);
+  const existing = refreshPromiseCache.get(cacheKey);
+  if (existing) {
+    log?.info?.("TOKEN_REFRESH", `Reusing in-flight/recent refresh for ${provider}`);
+    return existing;
   }
 
-  const refreshPromise = _getAccessTokenInternal(provider, credentials, log).finally(() => {
+  const refreshPromise = _getAccessTokenInternal(provider, credentials, log).then((result) => {
+    // Evict immediately on failure/unrecoverable so a later attempt can retry or re-auth.
+    // On success, keep the resolved value for a grace window to absorb concurrent requests.
+    if (!result || isUnrecoverableRefreshError(result)) {
+      refreshPromiseCache.delete(cacheKey);
+    } else {
+      const t = setTimeout(() => refreshPromiseCache.delete(cacheKey), REFRESH_CACHE_GRACE_MS);
+      t.unref?.();
+    }
+    return result;
+  }).catch((err) => {
     refreshPromiseCache.delete(cacheKey);
+    throw err;
   });
 
   refreshPromiseCache.set(cacheKey, refreshPromise);

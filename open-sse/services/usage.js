@@ -612,11 +612,15 @@ function getCodexRateLimitBody(snapshot) {
 
 function formatCodexWindow(window) {
   const used = Math.max(0, Math.min(100, toFiniteNumber(window?.used_percent ?? window?.percent_used, 0)));
+  // Window length (seconds) lets the UI label by real duration (5h vs 7d) instead of
+  // guessing from the primary/secondary slot — free plans expose only a 7d primary window.
+  const windowSeconds = toFiniteNumber(window?.limit_window_seconds ?? window?.window_seconds, 0) || null;
   return {
     used,
     total: 100,
     remaining: Math.max(0, 100 - used),
     resetAt: parseResetTime(window?.reset_at ?? window?.resets_at ?? window?.resetAt ?? null),
+    windowSeconds,
     unlimited: false,
   };
 }
