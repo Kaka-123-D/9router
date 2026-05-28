@@ -16,6 +16,20 @@ export async function POST(request, { params }) {
     if (!connection.accessToken) {
       return NextResponse.json({ error: "Account has no access token to write" }, { status: 400 });
     }
+    // Native Codex CLI requires a real refresh_token (its parser rejects missing
+    // and OpenAI rejects empty). Session-imported accounts without rt_ cannot be
+    // used with native CLI — route them through 9Router proxy instead.
+    if (!connection.refreshToken) {
+      return NextResponse.json(
+        {
+          error:
+            "Session accounts (no refresh token) cannot be activated for native Codex CLI. " +
+            "Use OAuth Login when adding the account to get a real refresh token, " +
+            "or route Codex CLI through 9Router (CLI Tools tab) to use this account via proxy.",
+        },
+        { status: 400 }
+      );
+    }
 
     const { authPath } = await writeCodexAuthFile(connection);
     await updateSettings({ activeCodexConnectionId: id });

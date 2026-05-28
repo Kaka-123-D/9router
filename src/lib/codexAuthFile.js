@@ -9,86 +9,19 @@ import os from "os";
 export const getCodexDir = () => path.join(os.homedir(), ".codex");
 export const getCodexAuthPath = () => path.join(getCodexDir(), "auth.json");
 
-// Decode a JWT payload without verifying the signature (we only read claims).
-function decodeJwtPayload(jwt) {
-  if (typeof jwt !== "string") return null;
-  const parts = jwt.split(".");
-  if (parts.length !== 3) return null;
-  try {
-    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
-    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function looksLikeJwt(token) {
-  return typeof token === "string" && token.split(".").length === 3;
-}
-
-/**
- * Parse a ChatGPT web-session JSON (from chatgpt.com/api/auth/session) into the
- * fields needed to create a Codex provider connection. Pure — no IO.
- *
- * @param {string} jsonString raw JSON pasted by the user
- * @returns {{accessToken, idToken, email, accountId, planType, expiresAt, jwtExp}}
- * @throws {Error} when the input is not valid JSON or lacks an accessToken
- */
-export function parseCodexSessionJson(jsonString) {
-  if (typeof jsonString !== "string" || jsonString.trim() === "") {
-    throw new Error("Session JSON is empty");
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(jsonString);
-  } catch {
-    throw new Error("Invalid JSON — paste the full session response");
-  }
-
-  const accessToken = typeof parsed.accessToken === "string" ? parsed.accessToken.trim() : "";
-  if (!looksLikeJwt(accessToken)) {
-    throw new Error("Missing or malformed 'accessToken' (expected a JWT)");
-  }
-
-  const payload = decodeJwtPayload(accessToken) || {};
-  const auth = payload["https://api.openai.com/auth"] || {};
-  const profile = payload["https://api.openai.com/profile"] || {};
-
-  const email =
-    parsed.user?.email || profile.email || payload.email || payload.preferred_username || null;
-
-  const accountId =
-    parsed.account?.id || auth.chatgpt_account_id || payload.account_id || null;
-
-  const planType =
-    parsed.account?.planType || auth.chatgpt_plan_type || payload.plan_type || null;
-
-  const jwtExp = typeof payload.exp === "number" ? payload.exp : null;
-  const expiresAt = jwtExp ? new Date(jwtExp * 1000).toISOString() : null;
-
-  return {
-    accessToken,
-    // Session JSON has no separate id_token; reuse the access token as a fallback.
-    idToken: accessToken,
-    email,
-    accountId,
-    planType,
-    expiresAt,
-    jwtExp,
-  };
-}
-
 /**
  * Build the ~/.codex/auth.json object from a stored provider connection. Pure.
- * refresh_token is "" when the connection has none (session-imported accounts).
+ * Callers must ensure the connection has a non-empty refreshToken — native
+ * Codex CLI rejects both missing and empty `refresh_token`.
  *
  * @param {object} connection providerConnection row (provider=codex)
  * @returns {object}
  */
 export function buildCodexAuthJson(connection) {
   const psd = connection?.providerSpecificData || {};
+  // Native Codex CLI requires every field in tokens to be a non-empty string
+  // (serde rejects missing fields, OpenAI rejects empty refresh_token).
+  // Callers must guard against connections without a real refresh_token.
   return {
     auth_mode: "chatgpt",
     tokens: {
@@ -99,6 +32,21 @@ export function buildCodexAuthJson(connection) {
     },
     last_refresh: new Date().toISOString(),
   };
+}
+
+/**
+ * Read ~/.codex/auth.json if present. Returns null when missing or invalid —
+ * never throws — so callers can probe state without try/catch noise.
+ *
+ * @returns {Promise<object|null>}
+ */
+export async function readCodexAuthFile() {
+  try {
+    const content = await fs.readFile(getCodexAuthPath(), "utf8");
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
 }
 
 /**

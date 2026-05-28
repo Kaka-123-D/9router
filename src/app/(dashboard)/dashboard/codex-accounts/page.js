@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, Button, Badge, OAuthModal, ConfirmModal, PageLoading } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
-import AddAccountModal from "./components/AddAccountModal";
 
 const CODEX_INFO = AI_PROVIDERS.codex;
 
@@ -78,6 +77,12 @@ function QuotaInline({ quota }) {
 function AccountRow({ account, quota, onActivate, onDelete, activating }) {
   const expiry = formatExpiry(account.accessTokenExpiresAt);
   const isExpired = account.testStatus === "expired" || expiry?.expired;
+  // Native Codex CLI requires a real refresh_token. Session-only accounts cannot
+  // be Switched (CLI parser rejects missing/empty rt_). Recommend OAuth Login.
+  const canSwitch = account.hasRefreshToken;
+  const switchTooltip = canSwitch
+    ? "Write this account to ~/.codex/auth.json"
+    : "Session-only accounts can't be used with native Codex CLI (no refresh token). Re-add via OAuth Login, or route Codex CLI through 9Router (CLI Tools).";
 
   return (
     <div
@@ -87,14 +92,14 @@ function AccountRow({ account, quota, onActivate, onDelete, activating }) {
           : "border-border-subtle bg-surface hover:bg-surface-2"
       }`}
     >
-      <label className="flex items-center cursor-pointer shrink-0" title="Write this account to ~/.codex/auth.json">
+      <label className={`flex items-center shrink-0 ${canSwitch ? "cursor-pointer" : "cursor-not-allowed"}`} title={switchTooltip}>
         <input
           type="radio"
           name="codex-active"
           checked={account.isActiveFile}
-          onChange={() => onActivate(account)}
-          disabled={activating}
-          className="size-4 accent-brand-500 cursor-pointer"
+          onChange={() => canSwitch && onActivate(account)}
+          disabled={activating || !canSwitch}
+          className="size-4 accent-brand-500 disabled:cursor-not-allowed disabled:opacity-40"
         />
       </label>
 
@@ -104,11 +109,7 @@ function AccountRow({ account, quota, onActivate, onDelete, activating }) {
             {account.name || account.email || "Codex account"}
           </h3>
           {account.isActiveFile && <Badge variant="primary" size="sm">ACTIVE</Badge>}
-          {account.hasRefreshToken ? (
-            <Badge variant="success" size="sm">auto-refresh</Badge>
-          ) : (
-            <Badge variant="default" size="sm">session (~10d)</Badge>
-          )}
+          {account.hasRefreshToken && <Badge variant="success" size="sm">auto-refresh</Badge>}
           {isExpired && <Badge variant="error" size="sm">expired</Badge>}
           {account.plan && <Badge variant="default" size="sm">{account.plan}</Badge>}
         </div>
@@ -123,15 +124,18 @@ function AccountRow({ account, quota, onActivate, onDelete, activating }) {
       </div>
 
       <div className="flex items-center gap-2 shrink-0">
-        <Button
-          variant={account.isActiveFile ? "secondary" : "outline"}
-          size="sm"
-          icon="switch_account"
-          onClick={() => onActivate(account)}
-          loading={activating}
-        >
-          {account.isActiveFile ? "Re-write" : "Switch"}
-        </Button>
+        <span title={switchTooltip}>
+          <Button
+            variant={account.isActiveFile ? "secondary" : "outline"}
+            size="sm"
+            icon="switch_account"
+            onClick={() => canSwitch && onActivate(account)}
+            loading={activating}
+            disabled={!canSwitch}
+          >
+            {account.isActiveFile ? "Re-write" : "Switch"}
+          </Button>
+        </span>
         <Button variant="ghost" size="sm" icon="delete" onClick={() => onDelete(account)} />
       </div>
     </div>
@@ -141,7 +145,6 @@ function AccountRow({ account, quota, onActivate, onDelete, activating }) {
 export default function CodexAccountsPage() {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showAdd, setShowAdd] = useState(false);
   const [showOAuth, setShowOAuth] = useState(false);
   const [activatingId, setActivatingId] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -240,7 +243,7 @@ export default function CodexAccountsPage() {
               Refresh quota
             </Button>
           )}
-          <Button variant="primary" icon="add" onClick={() => setShowAdd(true)}>
+          <Button variant="primary" icon="add" onClick={() => setShowOAuth(true)}>
             Add account
           </Button>
         </div>
@@ -272,7 +275,7 @@ export default function CodexAccountsPage() {
       {accounts.length === 0 ? (
         <Card padding="lg">
           <div className="text-center text-sm text-text-muted py-6">
-            No Codex accounts yet. Click <b>Add account</b> to paste a session JSON or log in.
+            No Codex accounts yet. Click <b>Add account</b> to log in with ChatGPT (OAuth).
           </div>
         </Card>
       ) : (
@@ -289,20 +292,6 @@ export default function CodexAccountsPage() {
           ))}
         </div>
       )}
-
-      <AddAccountModal
-        isOpen={showAdd}
-        onClose={() => setShowAdd(false)}
-        onImported={async () => {
-          setShowAdd(false);
-          setToast({ type: "success", msg: "Account added" });
-          await loadAccounts();
-        }}
-        onStartOAuth={() => {
-          setShowAdd(false);
-          setShowOAuth(true);
-        }}
-      />
 
       <OAuthModal
         isOpen={showOAuth}
