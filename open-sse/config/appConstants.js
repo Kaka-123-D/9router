@@ -154,7 +154,7 @@ export const ANTIGRAVITY_DEFAULT_SYSTEM = "You are Antigravity, a powerful agent
 
 // Proactive token refresh lead times per provider (ms)
 export const REFRESH_LEAD_MS = {
-  codex:       10 * 60 * 1000,          // 10 minutes (access_token lives ~10 days; refresh only near real expiry to avoid refresh_token_reused churn)
+  // codex: intentionally omitted — 9Router does not refresh Codex tokens.
   claude:       4 * 60 * 60 * 1000,     // 4 hours
   iflow:       24 * 60 * 60 * 1000,     // 24 hours
   qwen:        20 * 60 * 1000,          // 20 minutes

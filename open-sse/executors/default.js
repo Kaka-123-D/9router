@@ -170,7 +170,9 @@ export class DefaultExecutor extends BaseExecutor {
 
     const refreshers = {
       claude: () => this.refreshWithJSON(OAUTH_ENDPOINTS.anthropic.token, { grant_type: "refresh_token", refresh_token: credentials.refreshToken, client_id: PROVIDERS.claude.clientId }, proxyOptions),
-      codex: () => this.refreshWithForm(OAUTH_ENDPOINTS.openai.token, { grant_type: "refresh_token", refresh_token: credentials.refreshToken, client_id: PROVIDERS.codex.clientId, scope: "openid profile email offline_access" }, proxyOptions),
+      // codex: intentionally omitted — 9Router does NOT refresh codex tokens. The
+      // native Codex CLI is the sole owner of the rotating refresh token family;
+      // adding a second writer here invalidates the CLI's stored rt_ → Auth0 revoke.
       qwen: () => this.refreshWithForm(OAUTH_ENDPOINTS.qwen.token, { grant_type: "refresh_token", refresh_token: credentials.refreshToken, client_id: PROVIDERS.qwen.clientId }, proxyOptions),
       iflow: () => this.refreshIflow(credentials.refreshToken, proxyOptions),
       gemini: () => this.refreshGoogle(credentials.refreshToken, proxyOptions),

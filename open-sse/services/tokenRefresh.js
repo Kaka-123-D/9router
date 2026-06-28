@@ -242,76 +242,12 @@ export async function refreshQwenToken(refreshToken, log) {
   return null;
 }
 
-/**
- * Specialized refresh for Codex (OpenAI) OAuth tokens.
- * OpenAI uses rotating (one-time-use) refresh tokens.
- * Returns { error: 'unrecoverable_refresh_error' } when token already consumed/invalid,
- * so callers stop retrying and request re-authentication.
- */
-export async function refreshCodexToken(refreshToken, log) {
-  try {
-  const response = await fetch(OAUTH_ENDPOINTS.openai.token, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-    },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: PROVIDERS.codex.clientId,
-      scope: "openid profile email offline_access",
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-
-    // Detect unrecoverable errors (token reused/expired) — Auth0 revokes whole family on retry
-    let errorCode = null;
-    try {
-      const parsed = JSON.parse(errorText);
-      errorCode = parsed?.error?.code || (typeof parsed?.error === "string" ? parsed.error : null);
-    } catch {}
-
-    if (
-      errorCode === "refresh_token_reused" ||
-      errorCode === "invalid_grant" ||
-      errorCode === "token_expired" ||
-      errorCode === "invalid_token"
-    ) {
-      log?.error?.("TOKEN_REFRESH", "Codex refresh token already used or invalid. Re-auth required.", {
-        status: response.status,
-        errorCode,
-      });
-      return { error: "unrecoverable_refresh_error", code: errorCode };
-    }
-
-    log?.error?.("TOKEN_REFRESH", "Failed to refresh Codex token", {
-      status: response.status,
-      error: errorText,
-    });
-    return null;
-  }
-
-  const tokens = await response.json();
-
-  log?.info?.("TOKEN_REFRESH", "Successfully refreshed Codex token", {
-    hasNewAccessToken: !!tokens.access_token,
-    hasNewRefreshToken: !!tokens.refresh_token,
-    expiresIn: tokens.expires_in,
-  });
-
-  return {
-    accessToken: tokens.access_token,
-    refreshToken: tokens.refresh_token || refreshToken,
-    expiresIn: tokens.expires_in,
-  };
-  } catch (error) {
-    log?.error?.("TOKEN_REFRESH", `Network error refreshing Codex token: ${error.message}`);
-    return null;
-  }
-}
+// NOTE: 9Router intentionally does NOT refresh Codex (OpenAI) tokens. The native
+// Codex CLI owns the rotating refresh_token family stored in ~/.codex/auth.json.
+// A second writer here would invalidate the CLI's rt_ on the next rotation and
+// trigger an Auth0 family revoke (the classic "refresh_token_reused" footgun).
+// Codex routing through 9Router uses whatever access_token is in DB until it
+// expires (~10 days); re-add the account via OAuth when it does.
 
 /**
  * Specialized refresh for Kiro (AWS CodeWhisperer) tokens
@@ -593,7 +529,9 @@ async function _getAccessTokenInternal(provider, credentials, log) {
       return await refreshClaudeOAuthToken(credentials.refreshToken, log);
 
     case "codex":
-      return await refreshCodexToken(credentials.refreshToken, log);
+      // 9Router never refreshes Codex tokens (CLI owns the rt_ family).
+      // Explicit case keeps the policy self-documenting and silent.
+      return null;
 
     case "qwen":
       return await refreshQwenToken(credentials.refreshToken, log);
@@ -645,7 +583,7 @@ export async function refreshTokenByProvider(provider, credentials, log) {
     case "claude":
       return refreshClaudeOAuthToken(credentials.refreshToken, log);
     case "codex":
-      return refreshCodexToken(credentials.refreshToken, log);
+      return null; // 9Router never refreshes Codex tokens.
     case "qwen":
       return refreshQwenToken(credentials.refreshToken, log);
     case "iflow":

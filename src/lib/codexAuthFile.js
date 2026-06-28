@@ -35,21 +35,6 @@ export function buildCodexAuthJson(connection) {
 }
 
 /**
- * Read ~/.codex/auth.json if present. Returns null when missing or invalid —
- * never throws — so callers can probe state without try/catch noise.
- *
- * @returns {Promise<object|null>}
- */
-export async function readCodexAuthFile() {
-  try {
-    const content = await fs.readFile(getCodexAuthPath(), "utf8");
-    return JSON.parse(content);
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Overwrite ~/.codex/auth.json with the given connection's credentials.
  * Creates ~/.codex if absent.
  *

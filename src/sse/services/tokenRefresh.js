@@ -1,11 +1,6 @@
 // Re-export from open-sse with local logger
 import * as log from "../utils/logger.js";
-import {
-  updateProviderConnection,
-  getProviderConnectionById,
-  getSettings,
-} from "../../lib/localDb.js";
-import { readCodexAuthFile, writeCodexAuthFile } from "../../lib/codexAuthFile.js";
+import { updateProviderConnection } from "../../lib/localDb.js";
 import {
   getProjectIdForConnection,
   invalidateProjectId,
@@ -17,7 +12,6 @@ import {
   refreshClaudeOAuthToken as _refreshClaudeOAuthToken,
   refreshGoogleToken as _refreshGoogleToken,
   refreshQwenToken as _refreshQwenToken,
-  refreshCodexToken as _refreshCodexToken,
   refreshIflowToken as _refreshIflowToken,
   refreshGitHubToken as _refreshGitHubToken,
   refreshCopilotToken as _refreshCopilotToken,
@@ -27,7 +21,6 @@ import {
   getAllAccessTokens as _getAllAccessTokens,
   refreshKiroToken as _refreshKiroToken,
   getRefreshLeadMs as _getRefreshLeadMs,
-  isUnrecoverableRefreshError,
 } from "open-sse/services/tokenRefresh.js";
 
 export const TOKEN_EXPIRY_BUFFER_MS = BUFFER_MS;
@@ -45,9 +38,6 @@ export const refreshGoogleToken = (refreshToken, clientId, clientSecret) =>
 
 export const refreshQwenToken = (refreshToken) =>
   _refreshQwenToken(refreshToken, log);
-
-export const refreshCodexToken = (refreshToken) =>
-  _refreshCodexToken(refreshToken, log);
 
 export const refreshIflowToken = (refreshToken) =>
   _refreshIflowToken(refreshToken, log);
@@ -148,83 +138,6 @@ function _refreshProjectId(provider, connectionId, accessToken) {
     });
 }
 
-// ─── Codex active-account sync helpers ──────────────────────────────────────
-//
-// When a codex connection is the currently-active one (its tokens were written to
-// ~/.codex/auth.json via the "Switch" button), both 9Router and the native Codex
-// CLI may try to refresh the same rotating refresh_token. Whichever side refreshes
-// first invalidates the other's stored rt_; the stale side's next refresh attempt
-// is detected by Auth0 as token reuse and the entire token family is revoked,
-// producing "refresh token was revoked" errors.
-//
-// We bridge the two stores so the active account stays in sync:
-//   • Before any refresh, pull the freshest rt_ from auth.json into DB.
-//   • After any refresh, push the freshest rt_ from DB into auth.json.
-
-async function isActiveCodexConnection(connectionId, providerHint = null) {
-  if (!connectionId) return false;
-  try {
-    const settings = await getSettings();
-    if (settings.activeCodexConnectionId !== connectionId) return false;
-    if (providerHint === "codex") return true;
-    const conn = await getProviderConnectionById(connectionId);
-    return conn?.provider === "codex";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * If the active Codex CLI account has been refreshed by the CLI since we last
- * persisted, pull the fresher rt_/access_token from auth.json into DB and into
- * the in-memory creds object so the upcoming refresh uses the latest tokens.
- *
- * @param {object} creds  may be mutated; caller should use returned value
- * @param {string} provider
- * @returns {Promise<object>} possibly-updated creds (always returned)
- */
-async function syncCodexFromAuthFile(creds, provider) {
-  if (provider !== "codex" || !creds?.connectionId) return creds;
-  if (!(await isActiveCodexConnection(creds.connectionId, provider))) return creds;
-
-  const auth = await readCodexAuthFile();
-  const fileRt = auth?.tokens?.refresh_token;
-  const fileAt = auth?.tokens?.access_token;
-  if (!fileRt || fileRt === creds.refreshToken) return creds;
-
-  log.info("TOKEN_REFRESH", "auth.json has newer rt_, syncing CLI → DB before refresh", {
-    connectionId: creds.connectionId,
-  });
-
-  const updates = { refreshToken: fileRt };
-  if (fileAt) updates.accessToken = fileAt;
-  await updateProviderConnection(creds.connectionId, updates).catch((e) =>
-    log.warn("TOKEN_REFRESH", `CLI→DB sync failed: ${e?.message || e}`)
-  );
-
-  return {
-    ...creds,
-    refreshToken: fileRt,
-    accessToken: fileAt || creds.accessToken,
-  };
-}
-
-/**
- * After a fresh refresh is persisted to DB, mirror the new tokens into
- * ~/.codex/auth.json so the native CLI doesn't try to refresh with a stale rt_.
- */
-async function syncCodexToAuthFile(connectionId) {
-  if (!(await isActiveCodexConnection(connectionId, "codex"))) return;
-  try {
-    const conn = await getProviderConnectionById(connectionId);
-    if (!conn || conn.provider !== "codex" || !conn.accessToken) return;
-    await writeCodexAuthFile(conn);
-    log.info("TOKEN_REFRESH", "Synced fresh codex tokens DB → ~/.codex/auth.json", { connectionId });
-  } catch (e) {
-    log.warn("TOKEN_REFRESH", `DB→auth.json sync failed: ${e?.message || e}`);
-  }
-}
-
 // ─── Local-specific: persist credentials to localDb ──────────────────────────
 
 /**
@@ -264,9 +177,6 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
       connectionId,
       success: !!result
     });
-    // Mirror the new tokens to ~/.codex/auth.json when this is the active CLI
-    // account, so the native Codex CLI uses fresh tokens instead of stale rt_.
-    if (result) syncCodexToAuthFile(connectionId).catch(() => {});
     return !!result;
   } catch (error) {
     log.error("TOKEN_REFRESH", "Error updating credentials in localDb", {
@@ -290,9 +200,10 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
 export async function checkAndRefreshToken(provider, credentials) {
   let creds = { ...credentials };
 
-  // ── 0. For the active Codex CLI account, pick up any rt_ the CLI has rotated
-  //       since our last persist. Prevents stale-rt_ reuse → Auth0 family revoke.
-  creds = await syncCodexFromAuthFile(creds, provider);
+  // Codex is intentionally not refreshed by 9Router — the native Codex CLI owns
+  // the rotating refresh_token family in ~/.codex/auth.json; touching it here
+  // races the CLI and triggers an Auth0 family revoke. Pass creds through as-is.
+  if (provider === "codex") return creds;
 
   // ── 1. Regular access-token expiry ────────────────────────────────────────
   if (creds.expiresAt) {
@@ -309,24 +220,6 @@ export async function checkAndRefreshToken(provider, credentials) {
       });
 
       const newCreds = await getAccessToken(provider, creds);
-
-      // Refresh token consumed/invalid (e.g. Auth0 revoked the family) — stop retrying,
-      // mark the connection so the dashboard surfaces it for re-auth.
-      if (isUnrecoverableRefreshError(newCreds)) {
-        log.warn("TOKEN_REFRESH", "Unrecoverable refresh error, marking connection expired", {
-          provider,
-          connectionId: creds.connectionId,
-          code: newCreds.code,
-        });
-        if (creds.connectionId) {
-          await updateProviderConnection(creds.connectionId, {
-            testStatus: "expired",
-            lastError: "Refresh token expired or revoked — re-authentication required",
-            lastErrorAt: new Date().toISOString(),
-          }).catch(() => {});
-        }
-        return creds;
-      }
 
       if (newCreds?.accessToken) {
         const mergedCreds = {

@@ -36,7 +36,7 @@ export async function POST(request, { params }) {
 
     return NextResponse.json({ success: true, authPath, activeCodexConnectionId: id });
   } catch (error) {
-    console.log("Codex activate error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("Codex activate error:", error);
+    return NextResponse.json({ error: "Failed to activate Codex account" }, { status: 500 });
   }
 }

@@ -77,12 +77,14 @@ function QuotaInline({ quota }) {
 function AccountRow({ account, quota, onActivate, onDelete, activating }) {
   const expiry = formatExpiry(account.accessTokenExpiresAt);
   const isExpired = account.testStatus === "expired" || expiry?.expired;
-  // Native Codex CLI requires a real refresh_token. Session-only accounts cannot
-  // be Switched (CLI parser rejects missing/empty rt_). Recommend OAuth Login.
-  const canSwitch = account.hasRefreshToken;
-  const switchTooltip = canSwitch
+  // Native Codex CLI requires a real refresh_token in auth.json.
+  const canActOnFile = account.hasRefreshToken;
+  const switchTooltip = canActOnFile
     ? "Write this account to ~/.codex/auth.json"
-    : "Session-only accounts can't be used with native Codex CLI (no refresh token). Re-add via OAuth Login, or route Codex CLI through 9Router (CLI Tools).";
+    : "Account has no refresh_token — auth.json would be unusable. Re-add via OAuth Login.";
+  const downloadTooltip = canActOnFile
+    ? "Download auth.json for this account"
+    : "Account has no refresh_token — auth.json would be unusable.";
 
   return (
     <div
@@ -92,13 +94,13 @@ function AccountRow({ account, quota, onActivate, onDelete, activating }) {
           : "border-border-subtle bg-surface hover:bg-surface-2"
       }`}
     >
-      <label className={`flex items-center shrink-0 ${canSwitch ? "cursor-pointer" : "cursor-not-allowed"}`} title={switchTooltip}>
+      <label className={`flex items-center shrink-0 ${canActOnFile ? "cursor-pointer" : "cursor-not-allowed"}`} title={switchTooltip}>
         <input
           type="radio"
           name="codex-active"
           checked={account.isActiveFile}
-          onChange={() => canSwitch && onActivate(account)}
-          disabled={activating || !canSwitch}
+          onChange={() => canActOnFile && onActivate(account)}
+          disabled={activating || !canActOnFile}
           className="size-4 accent-brand-500 disabled:cursor-not-allowed disabled:opacity-40"
         />
       </label>
@@ -109,7 +111,6 @@ function AccountRow({ account, quota, onActivate, onDelete, activating }) {
             {account.name || account.email || "Codex account"}
           </h3>
           {account.isActiveFile && <Badge variant="primary" size="sm">ACTIVE</Badge>}
-          {account.hasRefreshToken && <Badge variant="success" size="sm">auto-refresh</Badge>}
           {isExpired && <Badge variant="error" size="sm">expired</Badge>}
           {account.plan && <Badge variant="default" size="sm">{account.plan}</Badge>}
         </div>
@@ -129,13 +130,27 @@ function AccountRow({ account, quota, onActivate, onDelete, activating }) {
             variant={account.isActiveFile ? "secondary" : "outline"}
             size="sm"
             icon="switch_account"
-            onClick={() => canSwitch && onActivate(account)}
+            onClick={() => canActOnFile && onActivate(account)}
             loading={activating}
-            disabled={!canSwitch}
+            disabled={!canActOnFile}
           >
             {account.isActiveFile ? "Re-write" : "Switch"}
           </Button>
         </span>
+        {canActOnFile ? (
+          <a
+            href={`/api/codex-accounts/${account.id}/auth-json`}
+            download
+            title={downloadTooltip}
+            className="inline-flex items-center justify-center size-7 rounded-[8px] text-text-muted hover:bg-surface-2 hover:text-text-main transition-colors"
+          >
+            <span className="material-symbols-outlined text-[18px]">download</span>
+          </a>
+        ) : (
+          <span title={downloadTooltip} className="inline-flex items-center justify-center size-7 rounded-[8px] text-text-muted opacity-40 cursor-not-allowed">
+            <span className="material-symbols-outlined text-[18px]">download</span>
+          </span>
+        )}
         <Button variant="ghost" size="sm" icon="delete" onClick={() => onDelete(account)} />
       </div>
     </div>
@@ -234,7 +249,7 @@ export default function CodexAccountsPage() {
         <div>
           <h1 className="text-lg font-semibold text-text-main">Codex Accounts</h1>
           <p className="text-xs text-text-muted mt-0.5">
-            Manage multiple Codex accounts and switch which one the native Codex CLI uses.
+            Add accounts via OAuth, then switch which one writes to <code className="text-[11px]">~/.codex/auth.json</code> or download an account&apos;s auth.json. 9Router never refreshes Codex tokens — the native Codex CLI owns the refresh flow.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -248,17 +263,6 @@ export default function CodexAccountsPage() {
           </Button>
         </div>
       </div>
-
-      <Card padding="sm" className="border-amber-500/30 bg-amber-500/5">
-        <div className="flex gap-2 text-xs text-text-muted">
-          <span className="material-symbols-outlined text-[16px] text-amber-500 shrink-0">warning</span>
-          <span>
-            Switching writes the selected account into <code className="text-[11px]">~/.codex/auth.json</code>.
-            Avoid using the same account through both 9Router proxy and the native Codex CLI at the
-            same time — both rotate the same refresh token and OpenAI may revoke it (401).
-          </span>
-        </div>
-      </Card>
 
       {toast && (
         <div
